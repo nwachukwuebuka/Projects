@@ -1,0 +1,119 @@
+# name: CI
+
+# permissions: {}
+
+# on:
+#   push:
+#   pull_request:
+#   workflow_dispatch:
+
+# env:
+#   FOUNDRY_PROFILE: ci
+
+# jobs:
+#   check:
+#     name: Foundry project
+#     runs-on: ubuntu-latest
+#     permissions:
+#       contents: read
+#     steps:
+#       - uses: actions/checkout@v6
+#         with:
+#           persist-credentials: false
+#           submodules: recursive
+
+#       - name: Install Foundry
+#         uses: foundry-rs/foundry-toolchain@v1
+
+#       - uses: actions/checkout@v4
+
+#       - name: Install Foundry
+#         uses: foundry-rs/foundry-toolchain@v1
+
+#       - name: Clean lib folder
+#         run: rm -rf lib
+
+#       - name: Install dependencies
+#         run: |
+#           forge install foundry-rs/forge-std
+#           forge install smartcontractkit/chainlink-brownie-contracts
+#           forge install Cyfrin/foundry-devops
+
+     
+#       - name: List lib folder
+#         run: ls -R lib
+
+#       - name: Build
+#         run: forge build --sizes
+
+#       - name: Show Forge version
+#         run: forge --version
+
+#       - name: Run Forge fmt
+#         run: forge fmt --check
+
+#       - name: Run Forge build
+#         run: forge build --sizes
+
+#       - name: Run Forge tests
+#         run: forge test -vvv
+
+name: CI
+
+permissions: {}
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+env:
+  FOUNDRY_PROFILE: ci
+
+jobs:
+  check:
+    name: Foundry project
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      # Checkout the repo with submodules
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          submodules: recursive
+
+      # Install Foundry
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+
+      # Clean lib folder to avoid stale dependencies
+      - name: Clean lib folder
+        run: rm -rf lib
+
+      # Install dependencies freshly
+      - name: Install dependencies
+        run: |
+          forge install foundry-rs/forge-std
+          forge install smartcontractkit/chainlink-brownie-contracts
+          forge install Cyfrin/foundry-devops
+
+      # Optional: debug lib folder structure
+      - name: List lib folder
+        run: ls -R lib
+
+      # Build contracts and show bytecode sizes
+      - name: Build contracts
+        run: forge build --sizes
+
+      # Show Forge version
+      - name: Show Forge version
+        run: forge --version
+
+      # Run code formatting check
+      - name: Run Forge fmt
+        run: forge fmt --check
+
+      # Run all tests
+      - name: Run Forge tests
+        run: forge test -vvv

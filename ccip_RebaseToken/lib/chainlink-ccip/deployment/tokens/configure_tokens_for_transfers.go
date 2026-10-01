@@ -1,0 +1,703 @@
+package tokens
+
+import (
+	"bytes"
+	"fmt"
+	"math/big"
+
+	"github.com/ethereum/go-ethereum/common"
+
+	chain_selectors "github.com/smartcontractkit/chain-selectors"
+	"github.com/smartcontractkit/chainlink-deployments-framework/datastore"
+	cldf "github.com/smartcontractkit/chainlink-deployments-framework/deployment"
+	cldf_ops "github.com/smartcontractkit/chainlink-deployments-framework/operations"
+	mcms_types "github.com/smartcontractkit/mcms/types"
+
+	"github.com/smartcontractkit/chainlink-ccip/deployment/deploy"
+	"github.com/smartcontractkit/chainlink-ccip/deployment/fees"
+	"github.com/smartcontractkit/chainlink-ccip/deployment/finality"
+	"github.com/smartcontractkit/chainlink-ccip/deployment/utils"
+	"github.com/smartcontractkit/chainlink-ccip/deployment/utils/changesets"
+	datastore_utils "github.com/smartcontractkit/chainlink-ccip/deployment/utils/datastore"
+	"github.com/smartcontractkit/chainlink-ccip/deployment/utils/mcms"
+)
+
+// TokenTransferConfig specifies configuration for a token on one chain to enable transfers with other chains.
+type TokenTransferConfig struct {
+	// ChainSelector identifies the chain on which the token lives.
+	ChainSelector uint64 `yaml:"chainSelector,string" json:"chainSelector,string"`
+	// TokenPoolRef is a reference to the token pool in the datastore.
+	// Populate the reference as needed to match the desired token pool.
+	TokenPoolRef datastore.AddressRef `yaml:"tokenPoolRef" json:"tokenPoolRef"`
+	// TokenRef is a reference to the token in the datastore. This is only needed if the token address cannot be derived from the pool reference.
+	TokenRef datastore.AddressRef `yaml:"tokenRef" json:"tokenRef"`
+	// ExternalAdmin is specified when we want to propose an admin that we don't control.
+	// Leave empty to use internal administration.
+	ExternalAdmin string `yaml:"externalAdmin" json:"externalAdmin"`
+	// RegistryRef is a reference to the contract on which the token pool must be registered.
+	// Populate the reference as needed to match the desired registry.
+	RegistryRef datastore.AddressRef `yaml:"registryRef" json:"registryRef"`
+	// RemoteChains specifies the remote chains to configure on the token pool.
+	RemoteChains map[uint64]RemoteChainConfig[*datastore.AddressRef, datastore.AddressRef] `yaml:"remoteChains" json:"remoteChains"`
+	// AllowedFinalityConfig specifies the finality config to set on the token pool. If this is
+	// the zero value, then the finality config will remain unchanged on-chain. Pre-v2 pools will
+	// ignore this parameter as it is not supported on those versions.
+	AllowedFinalityConfig finality.Config `yaml:"allowedFinalityConfig" json:"allowedFinalityConfig"`
+	// LiquidityMigrationAmount, if set, specifies an exact token amount to migrate from the old pool (read from the
+	// TokenAdminRegistry) to the new pool's lockbox. Mutually exclusive with LiquidityMigrationBasisPoints.
+	// When either LiquidityMigrationAmount or LiquidityMigrationBasisPoints is set, a liquidity migration is triggered.
+	// The old pool address is derived from the TokenAdminRegistry, and the timelock address from the MCMS config.
+	LiquidityMigrationAmount *big.Int `yaml:"liquidityMigrationAmount" json:"liquidityMigrationAmount"`
+	// LiquidityMigrationBasisPoints specifies a percentage of the old pool's balance to migrate (1-10000, where 10000 = 100%).
+	// Mutually exclusive with LiquidityMigrationAmount.
+	LiquidityMigrationBasisPoints *uint16 `yaml:"liquidityMigrationBasisPoints,string" json:"liquidityMigrationBasisPoints,string"`
+	// AutoMigrateRemoteChains is only applicable when migrating a pre-V2 pool to V2. When true, the changeset
+	// fetches the currently active pool from TAR, queries its supported remote chains, and populates RemoteChains
+	// automatically with (token, pool, decimals). Legacy lane fees are read from the fee quoter or onramp (v1.5.x)
+	// and merged with any user-provided tokenTransferFeeConfig on each remote (set YAML fields win; unset fields
+	// are imported). Rate limits are imported later by ConfigureTokenPoolForRemoteChain from the active pool.
+	// Requires an adapter implementing the TokenPoolMigrator interface. This knob has no effect if any of the
+	// following are true:
+	//  (1) There is no active pool in TAR for the token
+	//  (2) The active pool in TAR is already the target pool (extend mode)
+	//  (3) The active pool in TAR is already v2.0.0 or higher
+	//
+	// When discovery is skipped, the changeset logs at info level and does not error. Remote chains,
+	// connectivity, and fees are taken only from explicit RemoteChains YAML (same as autoMigrateRemoteChains: false).
+	// Remove the flag after a one-time upgrade to avoid confusion.
+	//
+	// YAML precedence during upgrade (per remote chain):
+	//  - Remote not listed: fully discovered from the active pool (token, pool, decimals); fees are
+	//    imported only when the legacy FeeQuoter/onRamp lane config is enabled for that token/lane.
+	//  - Remote listed with empty remoteToken AND empty remotePool: backfill token, pool, and decimals
+	//    from the active pool; YAML overrides fees and other fields when tokenTransferFeeConfig is set
+	//    (isEnabled required).
+	//  - Remote listed with only one of remoteToken or remotePool set: no connectivity backfill — the
+	//    provided field is kept as-is and the missing field is not imported from the legacy pool.
+	//    Provide both refs explicitly or leave both empty for full backfill.
+	//  - Remote listed with both remoteToken and remotePool set: YAML wins (coordinated retarget);
+	//    legacy active-pool refs are not overwritten.
+	//  - Remote listed but not supported by the legacy active pool: not enriched by discovery; you must
+	//    provide full connectivity in YAML.
+	//
+	// Fee discovery requires connected CCIP lanes (OnRamp/FeeQuoter resolvable per remote). Discovery failures
+	// abort the entire changeset. If legacy lane fees are disabled and YAML omits tokenTransferFeeConfig,
+	// no fee transactions are emitted on the new v2 pool.
+	//
+	// Limitation: discovery calls getSupportedChains on the TAR-registered active pool. Pools that do not
+	// implement that interface (e.g. USDCTokenPoolProxy) cause auto-migrate to fail; list remote chains
+	// explicitly in that case.
+	AutoMigrateRemoteChains bool `yaml:"autoMigrateRemoteChains" json:"autoMigrateRemoteChains"`
+}
+
+// ConfigureTokensForTransfersConfig is the configuration for the ConfigureTokensForTransfers changeset.
+type ConfigureTokensForTransfersConfig struct {
+	// Tokens specifies the tokens to configure for cross-chain transfers.
+	Tokens []TokenTransferConfig
+	// MCMS configures the resulting proposal.
+	MCMS mcms.Input
+}
+
+// ConfigureTokensForTransfers returns a changeset that configures tokens on multiple chains for transfers with other chains.
+func ConfigureTokensForTransfers(tokenRegistry *TokenAdapterRegistry, mcmsRegistry *changesets.MCMSReaderRegistry) cldf.ChangeSetV2[ConfigureTokensForTransfersConfig] {
+	return cldf.CreateChangeSet(makeApply(tokenRegistry, mcmsRegistry), makeVerify(tokenRegistry, mcmsRegistry))
+}
+
+func makeVerify(_ *TokenAdapterRegistry, _ *changesets.MCMSReaderRegistry) func(cldf.Environment, ConfigureTokensForTransfersConfig) error {
+	return func(e cldf.Environment, cfg ConfigureTokensForTransfersConfig) error {
+		// TODO: implement
+		return nil
+	}
+}
+
+func makeApply(_ *TokenAdapterRegistry, mcmsRegistry *changesets.MCMSReaderRegistry) func(cldf.Environment, ConfigureTokensForTransfersConfig) (cldf.ChangesetOutput, error) {
+	return func(e cldf.Environment, cfg ConfigureTokensForTransfersConfig) (cldf.ChangesetOutput, error) {
+		configs := make(map[uint64]TokenTransferConfig, len(cfg.Tokens))
+		for _, config := range cfg.Tokens {
+			configs[config.ChainSelector] = config
+		}
+		batchOps, reports, ds, err := processTokenConfigForChain(e, mcmsRegistry, cfg.MCMS, configs)
+		if err != nil {
+			return cldf.ChangesetOutput{}, fmt.Errorf("failed to process token configs for chains: %w", err)
+		}
+		return changesets.NewOutputBuilder(e, mcmsRegistry).
+			WithReports(reports).
+			WithBatchOps(batchOps).
+			WithDataStore(ds).
+			Build(cfg.MCMS)
+	}
+}
+
+func processTokenConfigForChain(e cldf.Environment, mcmsRegistry *changesets.MCMSReaderRegistry, mcmsInput mcms.Input, cfg map[uint64]TokenTransferConfig) ([]mcms_types.BatchOperation, []cldf_ops.Report[any, any], *datastore.MemoryDataStore, error) {
+	normalizerRegistry := deploy.GetAddressNormalizerRegistry()
+	tokenRegistry := GetTokenAdapterRegistry()
+	batchOps := make([]mcms_types.BatchOperation, 0)
+	reports := make([]cldf_ops.Report[any, any], 0)
+	ds := datastore.NewMemoryDataStore()
+
+	var err error
+	for selector, token := range cfg {
+		token.RegistryRef, err = TryNormalizeAddressRef(selector, token.RegistryRef)
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("failed to normalize registry ref address for chain selector %d: %w", selector, err)
+		}
+		cfg[selector] = token
+
+		var registryAddr string
+		if datastore_utils.IsAddressRefEmpty(token.RegistryRef) {
+			e.Logger.Warnf("Registry ref is empty for chain selector %d. We will rely on the underlying adapter to resolve this field.", selector)
+		} else {
+			if registry, err := datastore_utils.FindAndFormatRef(e.DataStore, token.RegistryRef, selector, datastore_utils.FullRef); err != nil {
+				return nil, nil, nil, fmt.Errorf("failed to resolve registry ref on chain with selector %d: %w", selector, err)
+			} else {
+				registryAddr = registry.Address
+			}
+		}
+
+		adapter, family, tokenPool, fullTokenRef, err := ResolveAdapterAndRefs(e, tokenRegistry, selector, token.TokenPoolRef, token.TokenRef)
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("failed to resolve adapter and refs for chain selector %d: %w", selector, err)
+		}
+
+		remoteChains := make(map[uint64]RemoteChainConfig[[]byte, string], len(token.RemoteChains))
+		for remoteChainSelector, inCfg := range token.RemoteChains {
+			counterpart, ok := cfg[remoteChainSelector]
+			if !ok {
+				return nil, nil, nil, fmt.Errorf("missing token transfer config for remote chain selector %d", remoteChainSelector)
+			}
+			counterpartRemoteChainCfg, ok := counterpart.RemoteChains[selector]
+			if !ok {
+				return nil, nil, nil, fmt.Errorf("missing remote chain config for chain selector %d in token transfer config for remote chain selector %d", selector, remoteChainSelector)
+			}
+			remoteChains[remoteChainSelector], err = convertRemoteChainConfig(
+				e,
+				selector,
+				tokenRegistry,
+				remoteChainSelector,
+				inCfg,
+				counterpartRemoteChainCfg,
+			)
+			if err != nil {
+				return nil, nil, nil, fmt.Errorf("failed to process remote chain config for remote chain selector %d: %w", remoteChainSelector, err)
+			}
+		}
+
+		if token.AutoMigrateRemoteChains {
+			registryMigrator, ok := adapter.(TokenPoolMigrator)
+			if !ok {
+				return nil, nil, nil, fmt.Errorf("adapter for chain selector %d does not support token pool migration, which is required when autoMigrateRemoteChains is enabled", selector)
+			}
+			activePool, err := registryMigrator.GetActivePool(e, selector, token.RegistryRef, fullTokenRef)
+			if err != nil {
+				return nil, nil, nil, fmt.Errorf("failed to get active pool for token pool on chain selector %d: %w", selector, err)
+			}
+			var legacyPoolMigrator TokenPoolMigrator
+			var allRemoteSelectors []uint64
+			if len(activePool) > 0 {
+				targetPoolBytes, err := adapter.AddressRefToBytes(tokenPool)
+				if err != nil {
+					return nil, nil, nil, fmt.Errorf("failed to convert target pool ref to bytes on chain selector %d: %w", selector, err)
+				}
+				if !bytes.Equal(activePool, targetPoolBytes) {
+					localNormalizer, ok := normalizerRegistry.GetAddressNormalizer(family)
+					if !ok {
+						return nil, nil, nil, fmt.Errorf("no address normalizer found for chain family %s on chain selector %d", family, selector)
+					}
+					activePoolAddr, err := localNormalizer.BytesToString(activePool)
+					if err != nil {
+						return nil, nil, nil, fmt.Errorf("failed to normalize active pool address on chain selector %d: %w", selector, err)
+					}
+					activePoolRef, err := ResolveTokenPoolRef(e, tokenRegistry, selector, datastore.AddressRef{Address: activePoolAddr})
+					if err != nil {
+						return nil, nil, nil, fmt.Errorf("failed to resolve active pool ref on chain selector %d: %w", selector, err)
+					}
+					if activePoolRef.Version == nil {
+						return nil, nil, nil, fmt.Errorf("active pool version is required for auto-migrate on chain selector %d", selector)
+					}
+					if activePoolRef.Version.LessThan(utils.Version_2_0_0) {
+						legacyAdapter, _, err := ResolveAdapter(tokenRegistry, selector, activePoolRef.Version)
+						if err != nil {
+							return nil, nil, nil, fmt.Errorf("failed to resolve adapter for active pool on chain selector %d: %w", selector, err)
+						}
+						legacyPoolMigrator, ok = legacyAdapter.(TokenPoolMigrator)
+						if !ok {
+							return nil, nil, nil, fmt.Errorf(
+								"adapter for active pool version %s on chain selector %d does not support token pool migration",
+								activePoolRef.Version, selector,
+							)
+						}
+						if supported, err := legacyPoolMigrator.GetSupportedChains(e, selector, activePool); err != nil {
+							return nil, nil, nil, fmt.Errorf("failed to get supported remote chains for token pool on chain selector %d: %w", selector, err)
+						} else {
+							allRemoteSelectors = supported
+						}
+					} else {
+						e.Logger.Infof("Active pool on chain selector %d is already v2.0.0 or higher, skipping auto-migration of remote chains", selector)
+					}
+				} else {
+					e.Logger.Infof("Active pool on chain selector %d is already the target pool, skipping auto-migration of remote chains", selector)
+				}
+			}
+			for _, remoteSelector := range allRemoteSelectors {
+				remoteFamily, err := chain_selectors.GetSelectorFamily(remoteSelector)
+				if err != nil {
+					return nil, nil, nil, fmt.Errorf("failed to get chain family for remote chain selector %d: %w", remoteSelector, err)
+				}
+				remoteNormalizer, ok := normalizerRegistry.GetAddressNormalizer(remoteFamily)
+				if !ok {
+					return nil, nil, nil, fmt.Errorf("no address normalizer found for chain family %s of remote chain selector %d", remoteFamily, remoteSelector)
+				}
+				remoteTokenBytes, err := legacyPoolMigrator.GetRemoteToken(e, selector, activePool, remoteSelector)
+				if err != nil {
+					return nil, nil, nil, fmt.Errorf("failed to get remote token for remote chain selector %d: %w", remoteSelector, err)
+				}
+				remotePools, err := legacyPoolMigrator.GetRemotePools(e, selector, activePool, remoteSelector)
+				if err != nil {
+					return nil, nil, nil, fmt.Errorf("failed to get remote pools for remote chain selector %d: %w", remoteSelector, err)
+				}
+				if len(remotePools) == 0 {
+					return nil, nil, nil, fmt.Errorf("pool has a remote pool registered for chain %d but no remote pool was returned", remoteSelector)
+				}
+				remotePoolBytes := remotePools[0]
+				if len(remotePoolBytes) == 0 {
+					return nil, nil, nil, fmt.Errorf("pool has a remote pool registered for chain %d but it is the zero address", remoteSelector)
+				}
+				remotePoolAddr, err := remoteNormalizer.BytesToString(remotePoolBytes)
+				if err != nil {
+					return nil, nil, nil, fmt.Errorf("failed to normalize remote pool address for remote chain selector %d: %w", remoteSelector, err)
+				}
+				remotePoolRef, err := ResolveTokenPoolRef(e, tokenRegistry, remoteSelector, datastore.AddressRef{Address: remotePoolAddr})
+				if err != nil {
+					return nil, nil, nil, fmt.Errorf("failed to resolve token pool ref for remote chain selector %d: %w", remoteSelector, err)
+				}
+				remoteAdapter, _, err := ResolveAdapter(tokenRegistry, remoteSelector, remotePoolRef.Version)
+				if err != nil {
+					return nil, nil, nil, fmt.Errorf("failed to resolve adapter for remote chain selector %d: %w", remoteSelector, err)
+				}
+				remoteTokenDecimals, err := remoteAdapter.DeriveTokenDecimals(e, remoteSelector, remotePoolRef, remoteTokenBytes)
+				if err != nil {
+					return nil, nil, nil, fmt.Errorf("failed to derive remote token decimals for remote chain selector %d: %w", remoteSelector, err)
+				}
+				feeAdapter, fqRef, err := fees.ResolveFeeAdapter(e.OperationsBundle, e.BlockChains, e.DataStore, selector, remoteSelector)
+				if err != nil {
+					return nil, nil, nil, fmt.Errorf("failed to resolve fee adapter for chain selector %d and remote chain selector %d: %w", selector, remoteSelector, err)
+				}
+				legacyTTFC, err := feeAdapter.GetOnchainTokenTransferFeeConfig(e.OperationsBundle, e.BlockChains, fqRef, selector, remoteSelector, fullTokenRef.Address)
+				if err != nil {
+					return nil, nil, nil, fmt.Errorf("failed to discover token transfer fee config for remote chain selector %d on chain selector %d: %w", remoteSelector, selector, err)
+				}
+
+				// Migrate remote pool + token + decimals
+				var rc RemoteChainConfig[[]byte, string]
+				if rc, ok = remoteChains[remoteSelector]; ok {
+					if len(rc.RemoteToken) == 0 && len(rc.RemotePool) == 0 {
+						rc.RemoteDecimals = remoteTokenDecimals
+						rc.RemoteToken = remoteTokenBytes
+						rc.RemotePool = remotePoolBytes
+					}
+				} else {
+					rc = RemoteChainConfig[[]byte, string]{
+						// We only need to set a few fields here - rate limits will be imported later downstream
+						RemoteDecimals: remoteTokenDecimals,
+						RemoteToken:    remoteTokenBytes,
+						RemotePool:     remotePoolBytes,
+					}
+				}
+
+				// Migrate fee config
+				feeCfg, err := rc.TokenTransferFeeConfig.ResolveForAutoMigrate(TokenTransferFeeConfig{
+					DestGasOverhead:               legacyTTFC.DestGasOverhead,
+					DestBytesOverhead:             legacyTTFC.DestBytesOverhead,
+					DefaultFinalityFeeUSDCents:    legacyTTFC.MinFeeUSDCents,
+					CustomFinalityFeeUSDCents:     0,
+					DefaultFinalityTransferFeeBps: legacyTTFC.DeciBps,
+					CustomFinalityTransferFeeBps:  0,
+					IsEnabled:                     legacyTTFC.IsEnabled,
+				})
+				if err != nil {
+					return nil, nil, nil, fmt.Errorf(
+						"failed to resolve auto-migrated fee config for chain selector %d and remote chain selector %d: %w",
+						selector, remoteSelector, err,
+					)
+				}
+				rc.TokenTransferFeeConfig = feeCfg
+				remoteChains[remoteSelector] = rc
+			}
+		}
+
+		// Resolve the timelock address if a liquidity migration is requested.
+		var timelockAddress string
+		if token.LiquidityMigrationAmount != nil || token.LiquidityMigrationBasisPoints != nil {
+			mcmsReader, ok := mcmsRegistry.GetMCMSReader(family)
+			if !ok {
+				return nil, nil, nil, fmt.Errorf("no MCMS reader registered for chain family '%s' on chain %d", family, selector)
+			}
+			timelockRef, err := mcmsReader.GetTimelockRef(e, selector, mcmsInput)
+			if err != nil {
+				return nil, nil, nil, fmt.Errorf("failed to get timelock address from MCMS config on chain %d: %w", selector, err)
+			}
+			timelockAddress = timelockRef.Address
+		}
+
+		// NOTE: this changeset already applies the fee configs so we set
+		// `TokenTransferFeeConfig` to nil BEFORE calling the lower-level
+		// sequence to prevent it from applying the fee configs again.
+		remoteChainsWithoutFeeConfigs := make(map[uint64]RemoteChainConfig[[]byte, string], len(remoteChains))
+		for sel, rc := range remoteChains {
+			rc.TokenTransferFeeConfig = nil
+			remoteChainsWithoutFeeConfigs[sel] = rc
+		}
+
+		// Configure pool remotes (fees excluded)
+		configureTokenReport, err := cldf_ops.ExecuteSequence(e.OperationsBundle, adapter.ConfigureTokenForTransfersSequence(), e.BlockChains, ConfigureTokenForTransfersInput{
+			ChainSelector:                 selector,
+			TokenPoolAddress:              tokenPool.Address,
+			RemoteChains:                  remoteChainsWithoutFeeConfigs,
+			ExternalAdmin:                 token.ExternalAdmin,
+			RegistryAddress:               registryAddr,
+			TokenRef:                      fullTokenRef,
+			PoolType:                      tokenPool.Type.String(),
+			ExistingDataStore:             e.DataStore,
+			AllowedFinalityConfig:         token.AllowedFinalityConfig,
+			LiquidityMigrationAmount:      token.LiquidityMigrationAmount,
+			LiquidityMigrationBasisPoints: token.LiquidityMigrationBasisPoints,
+			TimelockAddress:               timelockAddress,
+		})
+		if err != nil {
+			return batchOps, reports, nil, fmt.Errorf("failed to configure token pool on chain with selector %d: %w", selector, err)
+		}
+		batchOps = append(batchOps, configureTokenReport.Output.BatchOps...)
+		reports = append(reports, configureTokenReport.ExecutionReports...)
+		for _, r := range configureTokenReport.Output.Addresses {
+			if err := ds.Addresses().Add(r); err != nil {
+				return nil, nil, nil, fmt.Errorf("failed to add address %s to datastore: %w", r.Address, err)
+			}
+		}
+
+		// Apply fee configs
+		for remoteSelector, inCfg := range remoteChains {
+			if inCfg.TokenTransferFeeConfig != nil {
+				feeBatchOps, feeReports, err := applyTokenTransferFeeConfig(
+					e,
+					selector,
+					remoteSelector,
+					tokenPool,
+					fullTokenRef,
+					*inCfg.TokenTransferFeeConfig,
+				)
+				if err != nil {
+					return nil, nil, nil, fmt.Errorf("failed to apply token transfer fee config for remote chain selector %d: %w", remoteSelector, err)
+				}
+				batchOps = append(batchOps, feeBatchOps...)
+				reports = append(reports, feeReports...)
+			}
+		}
+	}
+
+	return batchOps, reports, ds, nil
+}
+
+func applyTokenTransferFeeConfig(
+	e cldf.Environment,
+	src, dst uint64,
+	fullSrcPoolRef datastore.AddressRef,
+	fullSrcTokenRef datastore.AddressRef,
+	srcToDstFeeCfg PartialTokenTransferFeeConfig,
+) ([]mcms_types.BatchOperation, []cldf_ops.Report[any, any], error) {
+	if fullSrcPoolRef.Version == nil {
+		return nil, nil, fmt.Errorf("token pool version is required to apply token transfer fee config for chain selector %d and remote chain selector %d", src, dst)
+	}
+
+	// NOTE: fee configs are applied differently based on the pool version:
+	//   Pre-V2 pools: apply the fee config on the fee quoter / onRamp (legacy lane).
+	//   On V2+ pools: apply the fee config on the token pool via TokenFeeAdapter.
+	if fullSrcPoolRef.Version.LessThan(utils.Version_2_0_0) {
+		return applyTokenTransferFeeConfigOnFeeQuoter(e, src, dst, fullSrcTokenRef, srcToDstFeeCfg)
+	} else {
+		return applyTokenTransferFeeConfigOnTokenPool(e, src, dst, fullSrcPoolRef, srcToDstFeeCfg)
+	}
+}
+
+func applyTokenTransferFeeConfigOnTokenPool(
+	e cldf.Environment,
+	src, dst uint64,
+	fullSrcPoolRef datastore.AddressRef,
+	partial PartialTokenTransferFeeConfig,
+) ([]mcms_types.BatchOperation, []cldf_ops.Report[any, any], error) {
+	feeAdapter, err := ResolveTokenFeeAdapter(e, src, fullSrcPoolRef)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to resolve token fee adapter for chain selector %d and token pool address %s: %w", src, fullSrcPoolRef.Address, err)
+	}
+	poolAddress := fullSrcPoolRef.Address
+	if poolAddress == "" {
+		return nil, nil, fmt.Errorf("token pool address is required to apply token transfer fee config for chain selector %d and remote chain selector %d", src, dst)
+	}
+
+	onChainConfig, err := feeAdapter.GetOnchainTokenTransferFeeConfig(e, poolAddress, src, dst)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to get on-chain token transfer fee config for pool %s on chain selector %d and remote chain selector %d: %w", poolAddress, src, dst, err)
+	}
+	defaultConfig := GetDefaultChainAgnosticTokenTransferFeeConfig(
+		src,
+		dst,
+	)
+
+	// Resolution strategy:
+	// (1) If on-chain config is enabled, merge it with the user's provided config (giving precedence to user's config)
+	// (2) Fall back to sensible defaults merged with user's provided config (giving precedence to user's config)
+	var requestedConfig TokenTransferFeeConfig
+	if onChainConfig.IsEnabled {
+		requestedConfig = partial.MergeWith(onChainConfig)
+	} else {
+		requestedConfig = partial.MergeWith(defaultConfig)
+	}
+
+	if !requestedConfig.IsEnabled && !onChainConfig.IsEnabled {
+		e.Logger.Infof("Skipping token transfer fee config for chain selector %d and remote chain selector %d since pool fee override is already disabled", src, dst)
+		return nil, nil, nil
+	}
+
+	if requestedConfig == onChainConfig {
+		e.Logger.Infof("Skipping token transfer fee config for chain selector %d and remote chain selector %d since the desired config is the same as the current on-chain config", src, dst)
+		return nil, nil, nil
+	}
+
+	result, err := cldf_ops.ExecuteSequence(
+		e.OperationsBundle,
+		feeAdapter.SetTokenTransferFee(&e),
+		e.BlockChains,
+		SetTokenTransferFeeSequenceInput{
+			Selector: src,
+			Settings: map[string]map[uint64]*TokenTransferFeeConfig{
+				poolAddress: {
+					dst: &requestedConfig,
+				},
+			},
+		},
+	)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to execute set token transfer fee sequence for chain selector %d and remote chain selector %d: %w", src, dst, err)
+	}
+
+	return result.Output.BatchOps, result.ExecutionReports, nil
+}
+
+func applyTokenTransferFeeConfigOnFeeQuoter(
+	e cldf.Environment,
+	src, dst uint64,
+	fullSrcTokenRef datastore.AddressRef,
+	partial PartialTokenTransferFeeConfig,
+) ([]mcms_types.BatchOperation, []cldf_ops.Report[any, any], error) {
+	feeAdapter, fqRef, err := fees.ResolveFeeAdapter(e.OperationsBundle, e.BlockChains, e.DataStore, src, dst)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to resolve fee adapter for chain selector %d and remote chain selector %d: %w", src, dst, err)
+	}
+	tokAddress := fullSrcTokenRef.Address
+	if tokAddress == "" {
+		return nil, nil, fmt.Errorf("source token address is required to apply token transfer fee config for remote chain selector %d", dst)
+	}
+
+	// NOTE: the TokenTransferFeeConfig for token pools is V2-focused and
+	// does NOT have MaxFeeUSDCents fields. As a result we will reuse the
+	// existing value from the chain or fallback to a sensible default if
+	// it isn't set on chain. It can't be configured directly by the user
+	// at the moment, but realistically speaking this should not an issue
+	// since we've never had the need to modify it after we initially set
+	// it to MaxUint32.
+	onChainConfig, err := feeAdapter.GetOnchainTokenTransferFeeConfig(e.OperationsBundle, e.BlockChains, fqRef, src, dst, fullSrcTokenRef.Address)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to get current on-chain token transfer fee config for chain selector %d and remote chain selector %d: %w", src, dst, err)
+	}
+	defaultConfig := fees.GetDefaultChainAgnosticTokenTransferFeeConfig(
+		src,
+		dst,
+	)
+
+	// Resolution strategy:
+	// (1) If on-chain config is enabled, merge it with the user's provided config (giving precedence to user's config)
+	// (2) Fall back to sensible defaults merged with user's provided config (giving precedence to user's config)
+	var requestedConfig fees.TokenTransferFeeArgs
+	if onChainConfig.IsEnabled {
+		requestedConfig = fees.TokenTransferFeeArgs{
+			MinFeeUSDCents:    partial.DefaultFinalityFeeUSDCents.GetOrDefault(onChainConfig.MinFeeUSDCents),
+			DeciBps:           partial.DefaultFinalityTransferFeeBps.GetOrDefault(onChainConfig.DeciBps),
+			DestBytesOverhead: partial.DestBytesOverhead.GetOrDefault(onChainConfig.DestBytesOverhead),
+			DestGasOverhead:   partial.DestGasOverhead.GetOrDefault(onChainConfig.DestGasOverhead),
+			IsEnabled:         partial.IsEnabled.GetOrDefault(onChainConfig.IsEnabled),
+			MaxFeeUSDCents:    onChainConfig.MaxFeeUSDCents,
+		}
+	} else {
+		requestedConfig = fees.TokenTransferFeeArgs{
+			MinFeeUSDCents:    partial.DefaultFinalityFeeUSDCents.GetOrDefault(defaultConfig.MinFeeUSDCents),
+			DeciBps:           partial.DefaultFinalityTransferFeeBps.GetOrDefault(defaultConfig.DeciBps),
+			DestBytesOverhead: partial.DestBytesOverhead.GetOrDefault(defaultConfig.DestBytesOverhead),
+			DestGasOverhead:   partial.DestGasOverhead.GetOrDefault(defaultConfig.DestGasOverhead),
+			IsEnabled:         partial.IsEnabled.GetOrDefault(defaultConfig.IsEnabled),
+			MaxFeeUSDCents:    defaultConfig.MaxFeeUSDCents,
+		}
+	}
+
+	if !requestedConfig.IsEnabled && !onChainConfig.IsEnabled {
+		e.Logger.Infof("Skipping token transfer fee config for chain selector %d and remote chain selector %d since legacy lane fee config is already disabled", src, dst)
+		return nil, nil, nil
+	}
+
+	if requestedConfig == onChainConfig {
+		e.Logger.Infof("Skipping token transfer fee config for chain selector %d and remote chain selector %d since the desired config is the same as the current on-chain config", src, dst)
+		return nil, nil, nil
+	}
+
+	result, err := cldf_ops.ExecuteSequence(
+		e.OperationsBundle,
+		feeAdapter.SetTokenTransferFee(e.DataStore, fqRef),
+		e.BlockChains,
+		fees.SetTokenTransferFeeSequenceInput{
+			Selector: src,
+			Settings: map[uint64]map[string]*fees.TokenTransferFeeArgs{
+				dst: {
+					fullSrcTokenRef.Address: &requestedConfig,
+				},
+			},
+		},
+	)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to execute set token transfer fee sequence for chain selector %d and remote chain selector %d: %w", src, dst, err)
+	}
+
+	return result.Output.BatchOps, result.ExecutionReports, nil
+}
+
+func convertRemoteChainConfig(
+	e cldf.Environment,
+	chainSelector uint64,
+	tokenAdapterRegistry *TokenAdapterRegistry,
+	remoteChainSelector uint64,
+	inCfg RemoteChainConfig[*datastore.AddressRef, datastore.AddressRef],
+	cpCfg RemoteChainConfig[*datastore.AddressRef, datastore.AddressRef],
+) (RemoteChainConfig[[]byte, string], error) {
+	if err := inCfg.Validate(); err != nil {
+		return RemoteChainConfig[[]byte, string]{}, fmt.Errorf("invalid remote chain config (chain %d → %d): %w", chainSelector, remoteChainSelector, err)
+	}
+	if err := cpCfg.Validate(); err != nil {
+		return RemoteChainConfig[[]byte, string]{}, fmt.Errorf("invalid counterpart remote chain config (chain %d → %d): %w", remoteChainSelector, chainSelector, err)
+	}
+
+	var outbound, inbound *RateLimiterConfigFloatInput
+	if ob, inOk := inCfg.GetOutboundRateLimitBuckets().DefaultBucket(); inOk {
+		outbound = &ob.RateLimit
+	}
+	if ib, cpOk := cpCfg.GetOutboundRateLimitBuckets().DefaultBucket(); cpOk {
+		inbound = &ib.RateLimit
+	}
+
+	// a chain's inbound rate limiter config should be based on the remote chain's outbound rate limiter config
+	// to ensure that the remote chain is configured to allow the desired traffic from this chain.
+	// The values here should NOT be passed in decimal adjusted but rather the adapters should be responsible for performing
+	// any necessary decimal adjustments based on the token decimals on each chain.
+	outCfg := RemoteChainConfig[[]byte, string]{
+		InboundRateLimiterConfig:  inbound,
+		OutboundRateLimiterConfig: outbound,
+		InboundRateLimits:         cpCfg.OutboundRateLimits,
+		OutboundRateLimits:        inCfg.OutboundRateLimits,
+		TokenTransferFeeConfig:    inCfg.TokenTransferFeeConfig,
+	}
+
+	if inCfg.RemotePool != nil {
+		fullRemotePoolRef, err := ResolveTokenPoolRef(e, tokenAdapterRegistry, remoteChainSelector, *inCfg.RemotePool)
+		if err != nil {
+			return outCfg, fmt.Errorf("failed to resolve remote pool ref %s: %w", datastore_utils.SprintRef(*inCfg.RemotePool), err)
+		}
+		remoteAdapter, _, err := ResolveAdapter(tokenAdapterRegistry, remoteChainSelector, fullRemotePoolRef.Version)
+		if err != nil {
+			return outCfg, fmt.Errorf("failed to resolve remote adapter for remote chain selector %d: %w", remoteChainSelector, err)
+		}
+		outCfg.RemotePool, err = remoteAdapter.AddressRefToBytes(fullRemotePoolRef)
+		if err != nil {
+			return outCfg, fmt.Errorf("failed to convert remote pool ref %s to bytes: %w", datastore_utils.SprintRef(*inCfg.RemotePool), err)
+		}
+
+		// If DeriveTokenAddress succeeds, then this has higher precedence than the token ref provided in the input since it is
+		// derived from on chain data (and hence more reliable). If it fails, then we fall back to using the token ref provided
+		// in the input and try to resolve it from the datastore first (to avoid RPC calls) then fall back to on chain data.
+		derivedTokenAddr, deriveErr := remoteAdapter.DeriveTokenAddress(e, remoteChainSelector, fullRemotePoolRef)
+		switch {
+		case deriveErr == nil:
+			e.Logger.Infof("Successfully derived remote token address %s for remote chain selector %d from remote pool ref %s", derivedTokenAddr, remoteChainSelector, datastore_utils.SprintRef(fullRemotePoolRef))
+			resolvedRef, err := ResolveTokenRef(e, tokenAdapterRegistry, remoteChainSelector, datastore.AddressRef{ChainSelector: remoteChainSelector, Address: derivedTokenAddr})
+			if err != nil {
+				return outCfg, fmt.Errorf("failed to resolve remote token after derivation %s: %w", derivedTokenAddr, err)
+			}
+			outCfg.RemoteToken, err = remoteAdapter.AddressRefToBytes(resolvedRef)
+			if err != nil {
+				return outCfg, fmt.Errorf("failed to convert resolved remote token to bytes %s: %w", derivedTokenAddr, err)
+			}
+		case inCfg.RemoteToken != nil:
+			e.Logger.Infof("Derivation of remote token address failed for remote chain selector %d (%s). Falling back to resolving remote token from provided token ref %s", remoteChainSelector, deriveErr.Error(), datastore_utils.SprintRef(*inCfg.RemoteToken))
+			resolvedRef, err := ResolveTokenRef(e, tokenAdapterRegistry, remoteChainSelector, *inCfg.RemoteToken)
+			if err != nil {
+				return outCfg, fmt.Errorf("failed to resolve remote token ref %s: %w", datastore_utils.SprintRef(*inCfg.RemoteToken), err)
+			}
+			outCfg.RemoteToken, err = remoteAdapter.AddressRefToBytes(resolvedRef)
+			if err != nil {
+				return outCfg, fmt.Errorf("failed to convert remote token ref %s to bytes: %w", datastore_utils.SprintRef(*inCfg.RemoteToken), err)
+			}
+		default:
+			return outCfg, fmt.Errorf("failed to derive remote token address and no remote token ref provided for remote chain selector %d: %w", remoteChainSelector, deriveErr)
+		}
+
+		outCfg.RemoteToken = common.LeftPadBytes(outCfg.RemoteToken, 32)
+		outCfg.RemoteDecimals, err = remoteAdapter.DeriveTokenDecimals(e, remoteChainSelector, fullRemotePoolRef, outCfg.RemoteToken)
+		if err != nil {
+			return outCfg, fmt.Errorf("failed to get remote token decimals for remote chain selector %d: %w", remoteChainSelector, err)
+		}
+		outCfg.RemotePool, err = remoteAdapter.DeriveTokenPoolCounterpart(e, remoteChainSelector, outCfg.RemotePool, outCfg.RemoteToken)
+		if err != nil {
+			return outCfg, fmt.Errorf("failed to derive remote pool counterpart for remote chain selector %d: %w", remoteChainSelector, err)
+		}
+	}
+	for _, ccvRef := range inCfg.OutboundCCVs {
+		ref, err := TryNormalizeAddressRef(chainSelector, ccvRef)
+		if err != nil {
+			return outCfg, fmt.Errorf("failed to normalize outbound CCV ref address for chain selector %d: %w", chainSelector, err)
+		}
+		fullCCVRef, err := datastore_utils.FindAndFormatRef(e.DataStore, ref, chainSelector, datastore_utils.FullRef)
+		if err != nil {
+			return outCfg, fmt.Errorf("failed to resolve outbound CCV ref %s: %w", datastore_utils.SprintRef(ref), err)
+		}
+		outCfg.OutboundCCVs = append(outCfg.OutboundCCVs, fullCCVRef.Address)
+	}
+	for _, ccvRef := range inCfg.InboundCCVs {
+		ref, err := TryNormalizeAddressRef(chainSelector, ccvRef)
+		if err != nil {
+			return outCfg, fmt.Errorf("failed to normalize inbound CCV ref address for chain selector %d: %w", chainSelector, err)
+		}
+		fullCCVRef, err := datastore_utils.FindAndFormatRef(e.DataStore, ref, chainSelector, datastore_utils.FullRef)
+		if err != nil {
+			return outCfg, fmt.Errorf("failed to resolve inbound CCV ref %s: %w", datastore_utils.SprintRef(ref), err)
+		}
+		outCfg.InboundCCVs = append(outCfg.InboundCCVs, fullCCVRef.Address)
+	}
+	for _, ccvRef := range inCfg.OutboundCCVsToAddAboveThreshold {
+		ref, err := TryNormalizeAddressRef(chainSelector, ccvRef)
+		if err != nil {
+			return outCfg, fmt.Errorf("failed to normalize outbound CCV-above-threshold ref address for chain selector %d: %w", chainSelector, err)
+		}
+		fullCCVRef, err := datastore_utils.FindAndFormatRef(e.DataStore, ref, chainSelector, datastore_utils.FullRef)
+		if err != nil {
+			return outCfg, fmt.Errorf("failed to resolve outbound CCV to add above threshold ref %s: %w", datastore_utils.SprintRef(ref), err)
+		}
+		outCfg.OutboundCCVsToAddAboveThreshold = append(outCfg.OutboundCCVsToAddAboveThreshold, fullCCVRef.Address)
+	}
+	for _, ccvRef := range inCfg.InboundCCVsToAddAboveThreshold {
+		ref, err := TryNormalizeAddressRef(chainSelector, ccvRef)
+		if err != nil {
+			return outCfg, fmt.Errorf("failed to normalize inbound CCV-above-threshold ref address for chain selector %d: %w", chainSelector, err)
+		}
+		fullCCVRef, err := datastore_utils.FindAndFormatRef(e.DataStore, ref, chainSelector, datastore_utils.FullRef)
+		if err != nil {
+			return outCfg, fmt.Errorf("failed to resolve inbound CCV to add above threshold ref %s: %w", datastore_utils.SprintRef(ref), err)
+		}
+		outCfg.InboundCCVsToAddAboveThreshold = append(outCfg.InboundCCVsToAddAboveThreshold, fullCCVRef.Address)
+	}
+	return outCfg, nil
+}

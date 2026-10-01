@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <!-- PATTERN 1 — LEGACY:
+       Older projects often used many divs for every UI region.
+       <div id="header">...</div>
+       Modern semantic HTML gives meaning to the document.
+
+       PATTERN 2 — RECOMMENDED:
+       Use header/nav/main/section/footer when those elements match the meaning. -->
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="StudyLend DeFi learning project">
+  <title>StudyLend — DeFirgfdwg Learningggg Lab</title>
+  <link rel="stylesheet" href="./src/styles.css">
+</head>
+<body>
+  <header class="site-header">
+    <div class="container nav-shell">
+      <a class="brand" href="/" aria-label="StudyLend home">StudyLend</a>
+
+      <nav aria-label="Primary navigation">
+        <a href="#dashboard">Dashboard</a>
+        <a href="#supply">Supply</a>
+        <a href="#borrow">Borrow</a>
+        <a href="#learn">Learn</a>
+      </nav>
+
+      <button id="connectButton" class="button button-primary" type="button">
+        Connect Wallet
+      </button>
+    </div>
+  </header>
+
+  <main id="dashboard" class="container">
+    <section class="hero" aria-labelledby="hero-title">
+      <div>
+        <p class="eyebrow">HTML • CSS • JavaScript • Solidity • Foundry</p>
+        <h1 id="hero-title">Learn DeFi by building a protocol.</h1>
+        <p class="hero-copy">
+          Supply liquidity, borrow against collateral, inspect transactions,
+          and follow the commented code from browser to blockchain.
+        </p>
+        <div class="hero-actions">
+          <a class="button button-primary" href="#supply">Start with Supply</a>
+          <a class="button button-secondary" href="#learn">Open Curriculum</a>
+        </div>
+      </div>
+
+      <aside class="protocol-card" aria-label="Protocol overview">
+        <div class="stat">
+          <span>Total supplied</span>
+          <strong id="totalSupply">0</strong>
+        </div>
+        <div class="stat">
+          <span>Total borrowed</span>
+          <strong id="totalBorrowed">0</strong>
+        </div>
+        <div class="stat">
+          <span>Utilization</span>
+          <strong id="utilization">0%</strong>
+        </div>
+      </aside>
+    </section>
+
+    <section class="grid-3" aria-label="Protocol cards">
+      <article class="card">
+        <span class="card-label">Network</span>
+        <strong id="networkName">Not connected</strong>
+        <small id="chainId">Chain ID: —</small>
+      </article>
+      <article class="card">
+        <span class="card-label">Wallet</span>
+        <strong id="walletAddress">Not connected</strong>
+        <small id="walletBalance">Balance: —</small>
+      </article>
+      <article class="card">
+        <span class="card-label">Protocol</span>
+        <strong>StudyLend v1</strong>
+        <small>Learning implementation</small>
+      </article>
+    </section>
+
+    <section id="supply" class="panel" aria-labelledby="supply-title">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Lesson 01</p>
+          <h2 id="supply-title">Supply liquidity</h2>
+        </div>
+        <span class="pill">ERC-20 → Pool Shares</span>
+      </div>
+
+      <form id="supplyForm" class="form-grid">
+        <label>
+          Amount
+          <input id="supplyAmount" name="amount" type="number" min="0" step="0.000001" placeholder="100" required>
+        </label>
+        <button class="button button-primary" type="submit">Supply</button>
+      </form>
+
+      <p class="hint">
+        Learning point: token approval is a separate transaction from the deposit.
+      </p>
+    </section>
+
+    <section id="borrow" class="panel" aria-labelledby="borrow-title">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Lesson 02</p>
+          <h2 id="borrow-title">Borrow against collateral</h2>
+        </div>
+        <span class="pill">Collateral → Debt</span>
+      </div>
+
+      <form id="borrowForm" class="form-grid">
+        <label>
+          Collateral
+          <input id="collateralAmount" name="collateral" type="number" min="0" step="0.000001" placeholder="200" required>
+        </label>
+        <label>
+          Borrow amount
+          <input id="borrowAmount" name="borrow" type="number" min="0" step="0.000001" placeholder="50" required>
+        </label>
+        <button class="button button-primary" type="submit">Borrow</button>
+      </form>
+    </section>
+
+    <section class="grid-2">
+      <article class="panel">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Your position</p>
+            <h2>Account</h2>
+          </div>
+        </div>
+        <dl class="position-list">
+          <div><dt>Supplied</dt><dd id="userSupply">0</dd></div>
+          <div><dt>Collateral</dt><dd id="userCollateral">0</dd></div>
+          <div><dt>Debt</dt><dd id="userDebt">0</dd></div>
+          <div><dt>Pool shares</dt><dd id="userShares">0</dd></div>
+        </dl>
+      </article>
+
+      <article class="panel">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Transaction log</p>
+            <h2>Activity</h2>
+          </div>
+        </div>
+        <div id="activityLog" class="activity" aria-live="polite">
+          <p>No transactions yet.</p>
+        </div>
+      </article>
+    </section>
+
+    <section id="learn" class="panel curriculum" aria-labelledby="learn-title">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Study map</p>
+          <h2 id="learn-title">One project, four curricula</h2>
+        </div>
+      </div>
+
+      <div class="curriculum-grid">
+        <article>
+          <h3>HTML</h3>
+          <p>Semantics, forms, accessibility, data attributes, templates.</p>
+          <code>&lt;section&gt; • &lt;form&gt; • &lt;button&gt;</code>
+        </article>
+        <article>
+          <h3>CSS</h3>
+          <p>Box model, Grid, Flexbox, responsive components, states.</p>
+          <code>grid • flex • var() • media queries</code>
+        </article>
+        <article>
+          <h3>JavaScript</h3>
+          <p>Modules, DOM, events, async transactions, BigInt, ABI calls.</p>
+          <code>import • await • BigInt • events</code>
+        </article>
+        <article>
+          <h3>Solidity + Foundry</h3>
+          <p>Storage, accounting, security, tests, fuzzing, deployment.</p>
+          <code>forge test • vm.prank • invariant</code>
+        </article>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <p>StudyLend is an educational protocol. Never use unaudited learning code with real funds.</p>
+    </div>
+  </footer>
+
+  <!-- PATTERN 1 — LEGACY:
+       <script src="./src/main.js"></script>
+
+       PATTERN 2 — RECOMMENDED:
+       ES modules make dependencies explicit and support import/export. -->
+  <script type="module" src="./src/main.js"></script>
+</body>
+</html>

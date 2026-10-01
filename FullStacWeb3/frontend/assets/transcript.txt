@@ -1,0 +1,3 @@
+StudyLend Media Lab
+
+A DeFi transaction starts in the user interface, moves through a wallet and RPC endpoint, and is executed by a smart contract.

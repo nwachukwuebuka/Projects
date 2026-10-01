@@ -1,0 +1,97 @@
+# Check if the current folder is already a Git repository
+git status
+
+
+# Initialize Git in the current folder (only needed if it is not already a Git repository)
+git init
+
+
+# Check the files that Git sees as changed, added, or untracked
+git status
+
+
+# Add all files in the current folder to the staging area
+git add .
+
+
+# Create a commit containing the staged changes
+git commit -m "Your commit message here"
+
+
+# Show the last 3 commits in a short format
+git log --oneline -3
+
+
+# Show the last 5 commits in a short format
+git log --oneline -5
+
+
+# Check which remote GitHub repository this folder is connected to
+git remote -v
+
+
+# Add a GitHub repository as the remote connection
+# Replace <username> and <repository-name> with your actual GitHub details
+git remote add origin https://github.com/<username>/<repository-name>.git
+
+
+# Check that the GitHub remote was added correctly
+git remote -v
+
+
+# Check your current branch name
+git branch
+
+
+# Rename the current branch to main (only needed if you are using master or another name)
+git branch -M main
+
+
+# Push your commits to GitHub for the first time
+# -u connects your local main branch with GitHub main branch
+git push -u origin main
+
+
+# Push new commits to GitHub after the first push
+git push
+
+
+# Download the latest changes from GitHub and merge them into your local branch
+git pull
+
+# Find files/folders in the current directory matching a pattern
+# Example: find anything with "Rebase" in the name
+find . -name "*Rebase*"
+
+
+# Show only files that Git is currently tracking
+git ls-files
+
+
+# Search tracked files for a specific word/path
+# Example: check if Git tracks anything containing "Rebase"
+git ls-files | grep Rebase
+
+
+# Show the contents of a file
+# Example: view your .gitignore file
+cat .gitignore
+
+
+# Remove a tracked file from Git and delete it locally
+# Use the full path if the file is inside folders
+git rm src/interfaces/IRebaseXToken.sol
+
+
+# Remove a tracked file/folder from Git but keep it on your computer
+# Useful for files that should not be uploaded anymore
+git rm --cached <file-name>
+
+
+# Remove a tracked folder from Git but keep it locally
+git rm -r --cached <folder-name>
+
+
+# Add a line to a file from the terminal
+# Example: add "out/" to .gitignore
+echo "out/" >> .gitignore

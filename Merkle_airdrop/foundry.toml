@@ -1,0 +1,18 @@
+[profile.default]
+src = "src"
+out = "out"
+libs = ["lib"]
+
+
+fs_permissions = [{ access = "read-write", path = "./"}]
+
+remappings = [
+    "@openzeppelin/contracts/=lib/openzeppelin-contracts-5.3.0/contracts/",
+    'murky/=lib/murky/',
+    # 'forge-std/=lib/forge-std/src/',
+]
+
+# [profile.zksync]
+# solc = "/home/luiztoreno/.svm/0.8.33/solc-0.8.33"
+
+# See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options

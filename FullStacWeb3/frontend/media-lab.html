@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>StudyLend — HTML Media Lab</title>
+  <link rel="stylesheet" href="./src/styles.css">
+</head>
+<body>
+  <main class="container">
+    <article class="panel">
+      <p class="eyebrow">HTML Expert Lab</p>
+      <h1>Video, audio, captions and transcripts</h1>
+
+      <!-- PATTERN 1 — SIMPLE:
+           <video src="./assets/defi-lesson.mp4" controls></video>
+
+           PATTERN 2 — RECOMMENDED:
+           Multiple source formats + poster + captions.
+           The files are placeholders: put your own media in assets/. -->
+      <h2>Video lesson</h2>
+
+      <video controls width="800" poster="./assets/video-poster.svg">
+        <source src="./assets/defi-lesson.mp4" type="video/mp4">
+        <source src="./assets/defi-lesson.webm" type="video/webm">
+
+        <track
+          kind="captions"
+          src="./assets/defi-lesson-en.vtt"
+          srclang="en"
+          label="English"
+          default
+        >
+
+        <p>
+          Your browser does not support video.
+          Read the transcript below instead.
+        </p>
+      </video>
+
+      <h3>Transcript</h3>
+      <details>
+        <summary>Open transcript</summary>
+        <p>
+          A DeFi transaction starts in the user interface, moves through a
+          wallet and RPC endpoint, and is finally executed by a smart contract.
+        </p>
+      </details>
+
+      <h2>Audio lesson</h2>
+
+      <!-- PATTERN 2 — RECOMMENDED:
+           Multiple formats plus fallback text. -->
+      <audio controls preload="metadata">
+        <source src="./assets/defi-lesson.mp3" type="audio/mpeg">
+        <source src="./assets/defi-lesson.ogg" type="audio/ogg">
+        <p>Your browser does not support audio.</p>
+      </audio>
+
+      <h2>Downloadable study material</h2>
+      <p>
+        <a href="./assets/transcript.txt" download>
+          Download transcript
+        </a>
+      </p>
+    </article>
+  </main>
+</body>
+</html>

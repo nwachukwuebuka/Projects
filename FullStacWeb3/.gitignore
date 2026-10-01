@@ -1,0 +1,6 @@
+foundry/cache/
+foundry/out/
+foundry/broadcast/
+.env
+.DS_Store
+node_modules/

@@ -1,0 +1,50 @@
+Compiling 33 files with Solc 0.8.33
+Solc 0.8.33 finished in 2.10s
+Compiler run successful with warnings:
+Warning (2018): Function state mutability can be restricted to view
+  --> test/RebaseTokenTest.t.sol:47:5:
+   |
+47 |     function testBalanceOfReturnsZeroIfUserHasNoTokens() public{
+   |     ^ (Relevant source part starts here and spans across multiple lines).
+
+Warning (2018): Function state mutability can be restricted to view
+   --> test/RebaseTokenTest.t.sol:363:5:
+    |
+363 |     function testGetTokenAddress() public {
+    |     ^ (Relevant source part starts here and spans across multiple lines).
+
+Analysing contracts...
+Running tests...
+
+Ran 18 tests for test/RebaseTokenTest.t.sol:RebaseTokenTest
+[PASS] testBalanceOfReturnsZeroIfUserHasNoTokens() (gas: 10784)
+[PASS] testBurnWorks() (gas: 100394)
+[PASS] testCannotSetInteretRate(uint256) (runs: 256, μ: 14079, ~: 14079)
+[PASS] testDeposit(uint256) (runs: 256, μ: 145967, ~: 146460)
+[PASS] testGetPrincipalAmount(uint256) (runs: 256, μ: 131977, ~: 132475)
+[PASS] testGetTokenAddress() (gas: 8000)
+[PASS] testGrantRole() (gas: 43496)
+[PASS] testIfMintingWorks() (gas: 121224)
+[PASS] testIfOnlyAssignedRoleCanMintAndBurn() (gas: 138782)
+[PASS] testIntestRateCanOnlyReduceAndStopAtZero(uint256) (runs: 256, μ: 22534, ~: 22877)
+[PASS] testRedeemAfterSomeTime(uint256,uint256) (runs: 256, μ: 157451, ~: 157521)
+[PASS] testRedeemStraightAway(uint256) (runs: 256, μ: 155192, ~: 155690)
+[PASS] testSetInterestRate(uint256) (runs: 256, μ: 143488, ~: 144699)
+[PASS] testTransfer(uint256) (runs: 256, μ: 229727, ~: 230223)
+[PASS] testTransferFrom() (gas: 180605)
+[PASS] testTransferFromMax() (gas: 178882)
+[PASS] testTransferMaxAmount() (gas: 175745)
+[PASS] testVaultReceiveWorks() (gas: 18438)
+Suite result: ok. 18 passed; 0 failed; 0 skipped; finished in 615.54ms (2.25s CPU time)
+
+Ran 1 test suite in 617.83ms (615.54ms CPU time): 18 tests passed, 0 failed, 0 skipped (18 total tests)
+
+╭---------------------+-----------------+-----------------+---------------+-----------------╮
+| File                | % Lines         | % Statements    | % Branches    | % Funcs         |
++===========================================================================================+
+| src/RebaseToken.sol | 100.00% (45/45) | 100.00% (43/43) | 100.00% (4/4) | 100.00% (12/12) |
+|---------------------+-----------------+-----------------+---------------+-----------------|
+| src/Vault.sol       | 93.75% (15/16)  | 92.86% (13/14)  | 50.00% (1/2)  | 100.00% (4/4)   |
+|---------------------+-----------------+-----------------+---------------+-----------------|
+| Total               | 98.36% (60/61)  | 98.25% (56/57)  | 83.33% (5/6)  | 100.00% (16/16) |
+╰---------------------+-----------------+-----------------+---------------+-----------------╯
