@@ -32,7 +32,8 @@ contract HelperConfig is Script {
     uint256 private constant ETH_SEPOLIA = 11155111;
     uint256 private constant ZKSYNC_MAINNET = 324;
     uint256 private constant ZKSYNC_SEPOLIA = 300;
-    uint256 private constant ARBITRUM_MAINNET = 42_161;
+    uint256 private constant ARBITRUM_MAINNET = 42161;
+    uint256 private constant ARB_SEPOLIA = 421614;
     uint256 private constant LOCAL_ANVIL = 31337;
 
     address private constant BURNER_WALLET = 0xF6C66AE2effe075aD541053D665C793905D9ad90;
@@ -53,9 +54,14 @@ contract HelperConfig is Script {
         networkHolder[ETH_MAINNET] = getEthMainnet();
         networkHolder[ETH_SEPOLIA] = getEthSepolia();
         networkHolder[ARBITRUM_MAINNET] = getArbitrumMainnet();
+        networkHolder[ARB_SEPOLIA] = getArbitrumSepolia();
         networkHolder[ZKSYNC_MAINNET] = getZksyncMainnet();
         networkHolder[ZKSYNC_SEPOLIA] = getZksyncSepolia();
-        networkHolder[LOCAL_ANVIL] = getOrCreateAnvilChain();
+
+        if (block.chainid == LOCAL_ANVIL) {
+            localAnvil = getOrCreateAnvilChain();
+        }
+
     }
 
     function getConfig() public view returns (NetworkConfig memory) {
@@ -87,6 +93,10 @@ contract HelperConfig is Script {
     }
 
     function getArbitrumMainnet() public view returns (NetworkConfig memory) {
+        return NetworkConfig({entryPoint: 0x0000000071727De22E5E9d8BAf0edAc6f37da032, account: BURNER_WALLET, token: address(erc)});
+    }
+
+    function getArbitrumSepolia() public view returns (NetworkConfig memory) {
         return NetworkConfig({entryPoint: 0x0000000071727De22E5E9d8BAf0edAc6f37da032, account: BURNER_WALLET, token: address(erc)});
     }
 

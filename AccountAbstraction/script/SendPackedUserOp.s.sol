@@ -12,7 +12,7 @@ import {PackedUserOperation} from "@eth-infinitism/account-abstraction/contracts
 import {MessageHashUtils} from "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {DevOpsTools} from "lib/foundry-devops/src/DevOpsTools.sol";
-import {MinimalAccount} from "src/MinimalAccount.sol";
+import {MinimalAccount} from "src/ethereum/MinimalAccount.sol";
 
 
 
@@ -81,8 +81,9 @@ contract SendPackedUserOp is Script{
         else{
             (v, r, s) = vm.sign(config.account, digest);
 
-            structUserOp.signature = abi.encodePacked(r, s, v);
         }
+        structUserOp.signature = abi.encodePacked(r, s, v);
+        
         return structUserOp;
     }
 
