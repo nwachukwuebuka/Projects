@@ -76,7 +76,9 @@ contract MinimalAccountTest is Test {
         bytes memory executeCallData = abi.encodeWithSelector(MinimalAccount.execute.selector, address(usdc), value, functionData);
 
         PackedUserOperation memory signedUserOp = sendPack.generateSignedUserOperation(executeCallData, helperconfig.getConfig(), address(minaccount));
+        //hash
         bytes32 signedUserOpHash = IEntryPoint(point).getUserOpHash(signedUserOp);
+        
         address actualSigner = ECDSA.recover(signedUserOpHash.toEthSignedMessageHash(), signedUserOp.signature);
 
         // Assert
